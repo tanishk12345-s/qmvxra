@@ -2,10 +2,10 @@ services:
   - type: web
     name: wind-forecast-intelligence-api
     runtime: docker
+    plan: free
     rootDir: backend
     dockerfilePath: ./Dockerfile
     healthCheckPath: /api/health
     envVars:
-      # For initial demo deployment. Restrict to the Vercel origin after it is created.
       - key: CORS_ORIGINS
         value: "*"
