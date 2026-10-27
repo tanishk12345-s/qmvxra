@@ -6,5 +6,6 @@ services:
     dockerfilePath: ./Dockerfile
     healthCheckPath: /api/health
     envVars:
+      # For initial demo deployment. Restrict to the Vercel origin after it is created.
       - key: CORS_ORIGINS
         value: "*"
