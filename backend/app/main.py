@@ -129,15 +129,56 @@ def build_analysis(start: date, end: date, cutoff_hour: int = 12) -> dict:
     actual_rows = get_rows("FUELHH", start, end)
     forecast_rows = get_rows("WINDFOR", start, end)
 
-    actuals: dict[str, float] = {}
+    # Keep the latest published actual for each half-hour period.
+    actual_versions: dict[str, tuple[datetime, float]] = {}
+
     for row in actual_rows:
         if str(row.get("fuelType", "")).upper() != "WIND":
             continue
+
         stamp = parse_dt(row.get("startTime"))
         generation = number(row.get("generation"))
-        if stamp and generation is not None:
-            actuals[stamp.isoformat()] = generation
 
+        if stamp is None or generation is None:
+            continue
+
+        delivery_date = stamp.astimezone(UK).date()
+        if not (start <= delivery_date <= end):
+            continue
+
+        published = parse_dt(row.get("publishTime")) or stamp
+        key = stamp.isoformat()
+        previous = actual_versions.get(key)
+
+        if previous is None or published > previous[0]:
+            actual_versions[key] = (published, generation)
+
+    # Group half-hourly actuals into UTC hours.
+    half_hours_by_hour: dict[str, dict[int, float]] = {}
+
+    for stamp_text, (_, generation) in actual_versions.items():
+        stamp = parse_dt(stamp_text)
+
+        if stamp is None or stamp.minute not in (0, 30):
+            continue
+
+        hour_start = stamp.replace(
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
+        hour_key = hour_start.isoformat()
+
+        half_hours_by_hour.setdefault(hour_key, {})[
+            stamp.minute
+        ] = generation
+
+    # Require both half-hour readings and average them.
+    actuals: dict[str, float] = {
+        hour_key: (readings[0] + readings[30]) / 2.0
+        for hour_key, readings in half_hours_by_hour.items()
+        if 0 in readings and 30 in readings
+    }
     # For each delivery period, choose the newest forecast published before
     # the selected day-ahead cutoff (12:00 UK by default). This is a stated
     # operational proxy, not a claim about the client's exact trading policy.
@@ -202,7 +243,15 @@ def build_analysis(start: date, end: date, cutoff_hour: int = 12) -> dict:
         "mean_bias_mw": round(sum(errors) / len(errors), 2),
         "mape_pct": round(sum(mape_values) / len(mape_values), 2) if mape_values else None,
         "latest_publication": latest_publication.isoformat() if latest_publication else None,
-        "methodology": f"Per delivery period, select the latest WINDFOR publishTime at or before {cutoff_hour:02d}:00 Europe/London on the previous calendar day. Error = forecast − actual. Positive bias means over-forecasting."
+        "methodology": (
+                f"Compare hourly WINDFOR forecasts with the average of the "
+                f"two corresponding half-hourly FUELHH WIND actuals. For each "
+                f"delivery hour, select the latest forecast published by "
+                f"{cutoff_hour:02d}:00 Europe/London on the previous calendar "
+                f"day. Error = forecast minus actual; positive bias means "
+                f"over-forecasting. Hours missing either half-hour actual are "
+                f"excluded rather than imputed."
+            ),
     }
     return {"points": points, "summary": summary, "message": None}
 
